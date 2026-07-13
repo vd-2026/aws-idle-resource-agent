@@ -13,7 +13,11 @@ Parameters:
   BedrockModelId:
     Type: String
     Default: anthropic.claude-3-5-sonnet-20240620-v1:0
-    Description: Bedrock foundation model used by the agent (must be enabled in Model access)
+    Description: >-
+      Bedrock foundation model ID OR inference profile ID/ARN used by the agent.
+      Newer models (e.g. Claude Sonnet 4.5) require an inference profile - pass
+      its ID (e.g. us.anthropic.claude-sonnet-4-5-20250929-v1:0) or full ARN here
+      instead of the raw model ID. Must be enabled in Bedrock Model access.
   CodeS3Bucket:
     Type: String
     Description: S3 bucket containing the Lambda deployment package (see scripts/deploy)
@@ -110,7 +114,9 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: bedrock:InvokeModel
-                Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}
+                Resource:
+                  - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*
+                  - "arn:aws:bedrock:*::foundation-model/*"
               - Effect: Allow
                 Action: lambda:InvokeFunction
                 Resource: !GetAtt ToolsFunction.Arn
