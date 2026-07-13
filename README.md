@@ -24,18 +24,68 @@ tools to call and in what order:
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    subgraph Trigger
+        EB[EventBridge<br/>weekly schedule]
+        User[Manual test /<br/>InvokeAgent call]
+    end
+
+    Agent[Bedrock Agent<br/>Claude foundation model]
+
+    subgraph "Action Group: idle-resource-tools (1 Lambda, 9 operations)"
+        L[Tools Lambda<br/>src/tools_handler/app.py]
+    end
+
+    CE[(Cost Explorer)]
+    EC2[(EC2 API +<br/>CloudWatch)]
+    EBSAPI[(EC2: Volumes,<br/>EIPs, Snapshots)]
+    RDSAPI[(RDS API +<br/>CloudWatch)]
+    ELBAPI[(ELBv2 API)]
+    LambdaAPI[(Lambda API +<br/>CloudWatch)]
+
+    SNS[/SNS Topic/]
+    Email([Email inbox])
+
+    EB --> Agent
+    User --> Agent
+    Agent -->|1: getCostByService| L
+    Agent -->|2-8: idle checks,<br/>chosen dynamically| L
+    Agent -->|9: sendReport| L
+
+    L --> CE
+    L --> EC2
+    L --> EBSAPI
+    L --> RDSAPI
+    L --> ELBAPI
+    L --> LambdaAPI
+    L -->|publish report| SNS
+    SNS --> Email
 ```
-EventBridge (weekly)  ──▶  Bedrock Agent (Claude)
-                              │
-                              ├─▶ getCostByService        (Cost Explorer)
-                              ├─▶ getEc2LowUtilization    (EC2 + CloudWatch)
-                              ├─▶ getUnattachedEbsVolumes (EC2)
-                              ├─▶ getUnassociatedEips     (EC2)
-                              ├─▶ getIdleRds              (RDS + CloudWatch)
-                              ├─▶ getIdleLoadBalancers    (ELBv2)
-                              ├─▶ getStaleLambdas         (Lambda + CloudWatch)
-                              ├─▶ getOldSnapshots         (EC2)
-                              └─▶ sendReport               ──▶ SNS Topic ──▶ Email
+
+**Agent decision flow** (why this is "agentic" and not a fixed pipeline):
+
+```mermaid
+sequenceDiagram
+    participant U as User / EventBridge
+    participant A as Bedrock Agent
+    participant L as Tools Lambda
+    participant S as SNS
+
+    U->>A: "Find idle resources, estimate savings, email report"
+    A->>L: getCostByService()
+    L-->>A: cost by service (last 30 days)
+    Note over A: Agent reasons: which services<br/>have non-trivial spend?
+    A->>L: getEc2LowUtilization() (if EC2 spend > threshold)
+    L-->>A: idle EC2 findings
+    A->>L: getIdleRds() (skipped if RDS spend ~$0)
+    L-->>A: (skipped)
+    A->>L: getUnattachedEbsVolumes(), getUnassociatedEips(), ...
+    L-->>A: findings
+    Note over A: Cross-reference findings with cost data,<br/>classify confidence, estimate savings
+    A->>L: sendReport(subject, message)
+    L->>S: sns:Publish
+    S-->>U: Email with report
 ```
 
 All 9 "tools" are operations on **one** Lambda function
