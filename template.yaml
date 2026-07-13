@@ -1,9 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Transform: AWS::Serverless-2016-10-31
 Description: >
   AWS Idle Resource Agent - Bedrock Agent + read-only Lambda tools that
   identify unused AWS resources (last 30 days) using Cost Explorer as a
-  starting signal, and email a report via SNS.
+  starting signal, and email a report via SNS. Plain CloudFormation, no
+  SAM transform - the Lambda deployment package must be uploaded to S3
+  first (see scripts/deploy.ps1 / deploy.sh).
 
 Parameters:
   NotificationEmail:
@@ -13,12 +14,13 @@ Parameters:
     Type: String
     Default: anthropic.claude-3-5-sonnet-20240620-v1:0
     Description: Bedrock foundation model used by the agent (must be enabled in Model access)
-
-Globals:
-  Function:
-    Runtime: python3.12
-    Timeout: 60
-    MemorySize: 256
+  CodeS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package (see scripts/deploy)
+  CodeS3Key:
+    Type: String
+    Default: idle-resource-agent/tools_handler.zip
+    Description: S3 key of the Lambda deployment package zip
 
 Resources:
   ReportTopic:
@@ -29,36 +31,59 @@ Resources:
         - Protocol: email
           Endpoint: !Ref NotificationEmail
 
-  ToolsFunction:
-    Type: AWS::Serverless::Function
+  ToolsFunctionRole:
+    Type: AWS::IAM::Role
     Properties:
-      CodeUri: src/tools_handler/
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IdleResourceReadOnlyChecks
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ce:GetCostAndUsage
+                  - ec2:DescribeInstances
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeAddresses
+                  - ec2:DescribeSnapshots
+                  - ec2:DescribeImages
+                  - rds:DescribeDBInstances
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - elasticloadbalancing:DescribeTargetHealth
+                  - lambda:ListFunctions
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:GetMetricData
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref ReportTopic
+
+  ToolsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: idle-resource-agent-tools
+      Runtime: python3.12
       Handler: app.lambda_handler
+      Role: !GetAtt ToolsFunctionRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref CodeS3Key
       Environment:
         Variables:
           REPORT_TOPIC_ARN: !Ref ReportTopic
-      Policies:
-        - Statement:
-            - Effect: Allow
-              Action:
-                - ce:GetCostAndUsage
-                - ec2:DescribeInstances
-                - ec2:DescribeVolumes
-                - ec2:DescribeAddresses
-                - ec2:DescribeSnapshots
-                - ec2:DescribeImages
-                - rds:DescribeDBInstances
-                - elasticloadbalancing:DescribeLoadBalancers
-                - elasticloadbalancing:DescribeTargetGroups
-                - elasticloadbalancing:DescribeTargetHealth
-                - lambda:ListFunctions
-                - cloudwatch:GetMetricStatistics
-                - cloudwatch:GetMetricData
-              Resource: "*"
-            - Effect: Allow
-              Action:
-                - sns:Publish
-              Resource: !Ref ReportTopic
 
   ToolsFunctionResourcePolicy:
     Type: AWS::Lambda::Permission
@@ -96,7 +121,7 @@ Resources:
       AgentName: idle-resource-agent
       AgentResourceRoleArn: !GetAtt BedrockAgentRole.Arn
       FoundationModel: !Ref BedrockModelId
-      Instruction: !Sub |
+      Instruction: |
         You are a FinOps analyst assistant. Your job is to find AWS resources
         that are likely unused or idle over the last 30 days and report
         estimated wasted spend. Steps:

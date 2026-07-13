@@ -45,9 +45,11 @@ simple to deploy while still exposing a rich toolset to the agent.
 ## Repo layout
 
 ```
-template.yaml              SAM template: Lambda, IAM, SNS topic, Bedrock Agent + Action Group
-src/tools_handler/app.py   All read-only checks + SNS report publisher
+template.yaml               Plain CloudFormation: Lambda, IAM, SNS topic, Bedrock Agent + Action Group
+src/tools_handler/app.py    All read-only checks + SNS report publisher
 src/tools_handler/requirements.txt
+scripts/deploy.ps1          Zip, upload to S3, and deploy (PowerShell)
+scripts/deploy.sh           Zip, upload to S3, and deploy (bash)
 ```
 
 ## Prerequisites
@@ -55,23 +57,40 @@ src/tools_handler/requirements.txt
 - AWS account with **Bedrock model access enabled** for
   `anthropic.claude-3-5-sonnet-20240620-v1:0` (or change `BedrockModelId`)
   in the Bedrock console → Model access.
-- AWS CLI configured with credentials that can deploy CloudFormation/SAM.
-- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html) installed.
+- AWS CLI configured with credentials that can deploy CloudFormation.
+- An S3 bucket you can upload the Lambda deployment package to (any bucket
+  in the same region works).
 - Python 3.12.
+
+This project uses **plain CloudFormation** (`template.yaml`, no
+`Transform: AWS::Serverless-2016-10-31`, no SAM CLI required). Because
+there's no SAM packaging step, the Lambda code must be zipped and uploaded
+to S3 before `aws cloudformation deploy` runs — the provided scripts do
+both steps for you.
 
 ## Deploy
 
-```bash
-sam build
-sam deploy --guided
+**PowerShell:**
+```powershell
+.\scripts\deploy.ps1 -Bucket my-deploy-bucket -Email you@example.com
 ```
 
-You'll be prompted for:
-- `NotificationEmail` — where the report gets emailed (you must **confirm
-  the SNS subscription email** AWS sends you before reports will arrive).
-- `BedrockModelId` — defaults to Claude 3.5 Sonnet.
+**bash:**
+```bash
+./scripts/deploy.sh my-deploy-bucket you@example.com
+```
 
-After deploy, note the `AgentId` output.
+Both scripts: zip `src/tools_handler/`, upload it to
+`s3://<bucket>/idle-resource-agent/tools_handler.zip`, then run
+`aws cloudformation deploy` with `NotificationEmail`, `CodeS3Bucket`,
+`CodeS3Key`, and `BedrockModelId` as parameters.
+
+You must **confirm the SNS subscription email** AWS sends you before
+reports will arrive. After deploy, note the `AgentId` stack output.
+
+To redeploy after changing `src/tools_handler/app.py`, just re-run the
+same script — it re-zips, re-uploads, and updates the stack (Lambda code
+changes are picked up automatically by CloudFormation on redeploy).
 
 ## Try it
 
