@@ -1,6 +1,7 @@
 .aws-sam/
 __pycache__/
 *.pyc
+*.zip
 .venv/
 venv/
 samconfig.toml
