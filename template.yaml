@@ -160,7 +160,7 @@ Resources:
                 /cost-by-service:
                   get:
                     operationId: getCostByService
-                    summary: Get AWS cost grouped by service for the last 30 days from Cost Explorer
+                    description: Get AWS cost grouped by service for the last 30 days from Cost Explorer
                     responses:
                       "200":
                         description: Cost breakdown by service
@@ -171,7 +171,7 @@ Resources:
                 /ec2-low-utilization:
                   get:
                     operationId: getEc2LowUtilization
-                    summary: List stopped EC2 instances or running instances with average CPU below 5% over 30 days
+                    description: List stopped EC2 instances or running instances with average CPU below 5% over 30 days
                     responses:
                       "200":
                         description: List of low-utilization EC2 instances
@@ -182,7 +182,7 @@ Resources:
                 /unattached-ebs-volumes:
                   get:
                     operationId: getUnattachedEbsVolumes
-                    summary: List EBS volumes in 'available' (unattached) state
+                    description: List EBS volumes in 'available' (unattached) state
                     responses:
                       "200":
                         description: List of unattached EBS volumes
@@ -193,7 +193,7 @@ Resources:
                 /unassociated-eips:
                   get:
                     operationId: getUnassociatedEips
-                    summary: List Elastic IPs not associated with any instance or network interface
+                    description: List Elastic IPs not associated with any instance or network interface
                     responses:
                       "200":
                         description: List of unassociated Elastic IPs
@@ -204,7 +204,7 @@ Resources:
                 /idle-rds:
                   get:
                     operationId: getIdleRds
-                    summary: List RDS instances with near-zero database connections over the last 30 days
+                    description: List RDS instances with near-zero database connections over the last 30 days
                     responses:
                       "200":
                         description: List of idle RDS instances
@@ -215,7 +215,7 @@ Resources:
                 /idle-load-balancers:
                   get:
                     operationId: getIdleLoadBalancers
-                    summary: List load balancers with no registered or no healthy targets
+                    description: List load balancers with no registered or no healthy targets
                     responses:
                       "200":
                         description: List of idle load balancers
@@ -226,7 +226,7 @@ Resources:
                 /stale-lambdas:
                   get:
                     operationId: getStaleLambdas
-                    summary: List Lambda functions with zero invocations over the last 30 days
+                    description: List Lambda functions with zero invocations over the last 30 days
                     responses:
                       "200":
                         description: List of stale Lambda functions
@@ -237,7 +237,7 @@ Resources:
                 /old-snapshots:
                   get:
                     operationId: getOldSnapshots
-                    summary: List EBS snapshots older than 90 days that are not referenced by any AMI
+                    description: List EBS snapshots older than 90 days that are not referenced by any AMI
                     responses:
                       "200":
                         description: List of old, likely-orphaned snapshots
@@ -248,7 +248,7 @@ Resources:
                 /send-report:
                   post:
                     operationId: sendReport
-                    summary: Publish the final idle-resource report to the SNS email topic
+                    description: Publish the final idle-resource report to the SNS email topic
                     requestBody:
                       required: true
                       content:
