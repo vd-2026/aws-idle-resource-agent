@@ -5,7 +5,8 @@ your AWS account, figures out where money is actually being spent (via **Cost
 Explorer**), and then decides for itself which idle-resource checks are worth
 running — instead of blindly checking everything. It's **read-only**: it only
 reports and recommends, never deletes or stops anything. The final report is
-emailed via **SNS**.
+published to an **SNS topic** you provide (subscribe your email, Slack, or
+anything else to that topic to receive it).
 
 ## Why this is "agentic" (not just a script)
 
@@ -69,8 +70,8 @@ flowchart LR
     LambdaAPI[(Lambda API +<br/>CloudWatch)]
     GenericAPI[(S3, DynamoDB, SageMaker,<br/>Redshift, OpenSearch, NAT GW<br/>- whitelisted only)]
 
-    SNS[/SNS Topic/]
-    Email([Email inbox])
+    SNS[/Existing SNS Topic<br/>NotificationTopicArn/]
+    Subscriber([Your subscriber:<br/>email, Slack, SQS, etc.])
 
     EB --> Agent
     User --> Agent
@@ -87,7 +88,7 @@ flowchart LR
     L --> LambdaAPI
     L --> GenericAPI
     L -->|publish report| SNS
-    SNS --> Email
+    SNS --> Subscriber
 ```
 
 **Agent decision flow** (why this is "agentic" and not a fixed pipeline):
@@ -99,7 +100,7 @@ sequenceDiagram
     participant L as Tools Lambda
     participant S as SNS
 
-    U->>A: "Find idle resources, estimate savings, email report"
+    U->>A: "Find idle resources, estimate savings, publish report"
     A->>L: getCostByService()
     L-->>A: cost by service (last 30 days)
     Note over A: Agent reasons: which services<br/>have non-trivial spend?
@@ -112,7 +113,7 @@ sequenceDiagram
     Note over A: Cross-reference findings with cost data,<br/>classify confidence, estimate savings
     A->>L: sendReport(subject, message)
     L->>S: sns:Publish
-    S-->>U: Email with report
+    S-->>U: Delivered to subscribers (email, Slack, etc.)
 ```
 
 All 10 "tools" are operations on **one** Lambda function
@@ -122,7 +123,7 @@ simple to deploy while still exposing a rich toolset to the agent.
 ## Repo layout
 
 ```
-template.json                Plain CloudFormation (JSON): Lambda, IAM, SNS topic, Bedrock Agent + Action Group
+template.json                Plain CloudFormation (JSON): Lambda, IAM, Bedrock Agent + Action Group
 src/tools_handler/app.py    All read-only checks + SNS report publisher
 src/tools_handler/requirements.txt
 scripts/deploy.ps1          Zip, upload to S3, and deploy (PowerShell)
@@ -135,6 +136,14 @@ scripts/deploy.sh           Zip, upload to S3, and deploy (bash)
   `anthropic.claude-3-5-sonnet-20240620-v1:0` (or change `BedrockModelId`)
   in the Bedrock console → Model access.
 - AWS CLI configured with credentials that can deploy CloudFormation.
+- An **existing SNS topic** to receive the report (this stack does not
+  create one). Create it yourself and subscribe whatever endpoint you want
+  (email, Slack via Lambda/chatbot, another Lambda, SQS, etc.):
+  ```bash
+  aws sns create-topic --name idle-resource-agent-reports
+  aws sns subscribe --topic-arn <topic-arn> --protocol email --notification-endpoint you@example.com
+  ```
+  (Confirm the subscription email AWS sends you before reports will arrive.)
 - An S3 bucket you can upload the Lambda deployment package to (any bucket
   in the same region works).
 - Python 3.12.
@@ -149,21 +158,22 @@ both steps for you.
 
 **PowerShell:**
 ```powershell
-.\scripts\deploy.ps1 -Bucket my-deploy-bucket -Email you@example.com
+.\scripts\deploy.ps1 -Bucket my-deploy-bucket -NotificationTopicArn arn:aws:sns:ap-southeast-1:123456789012:idle-resource-agent-reports
 ```
 
 **bash:**
 ```bash
-./scripts/deploy.sh my-deploy-bucket you@example.com
+./scripts/deploy.sh my-deploy-bucket arn:aws:sns:ap-southeast-1:123456789012:idle-resource-agent-reports
 ```
 
 Both scripts: zip `src/tools_handler/`, upload it to
 `s3://<bucket>/idle-resource-agent/tools_handler.zip`, then run
-`aws cloudformation deploy` with `NotificationEmail`, `CodeS3Bucket`,
+`aws cloudformation deploy` with `NotificationTopicArn`, `CodeS3Bucket`,
 `CodeS3Key`, and `BedrockModelId` as parameters.
 
-You must **confirm the SNS subscription email** AWS sends you before
-reports will arrive. After deploy, note the `AgentId` stack output.
+The SNS topic must already exist and already have your desired
+subscription(s) confirmed — see Prerequisites above. After deploy, note the
+`AgentId` stack output.
 
 To redeploy after changing `src/tools_handler/app.py`, just re-run the
 same script — it re-zips, re-uploads, and updates the stack (Lambda code
@@ -178,7 +188,7 @@ aws bedrock-agent-runtime invoke-agent \
   --agent-id <AgentId> \
   --agent-alias-id TSTALIASID \
   --session-id demo-session-1 \
-  --input-text "Find unused AWS resources from the last 30 days, estimate wasted spend, and email me the report." \
+  --input-text "Find unused AWS resources from the last 30 days, estimate wasted spend, and publish the report." \
   output.json
 ```
 

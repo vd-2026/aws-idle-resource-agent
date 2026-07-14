@@ -3,13 +3,15 @@
 # CloudFormation needs the code already sitting in S3 before deploy).
 #
 # Usage:
-#   .\scripts\deploy.ps1 -Bucket my-deploy-bucket -Email you@example.com
+#   .\scripts\deploy.ps1 -Bucket my-deploy-bucket -NotificationTopicArn arn:aws:sns:ap-southeast-1:123456789012:my-topic
 #
 # Requires: AWS CLI configured with deploy permissions, PowerShell 5+.
+# NOTE: The SNS topic must already exist (and have any subscriptions you
+# want, e.g. email) - this stack publishes to it but does not create it.
 
 param(
     [Parameter(Mandatory = $true)][string]$Bucket,
-    [Parameter(Mandatory = $true)][string]$Email,
+    [Parameter(Mandatory = $true)][string]$NotificationTopicArn,
     [string]$StackName = "idle-resource-agent",
     [string]$Key = "idle-resource-agent/tools_handler.zip",
     [string]$BedrockModelId = "anthropic.claude-3-5-sonnet-20240620-v1:0"
@@ -35,7 +37,7 @@ aws cloudformation deploy `
     --stack-name $StackName `
     --capabilities CAPABILITY_IAM `
     --parameter-overrides `
-        NotificationEmail=$Email `
+        NotificationTopicArn=$NotificationTopicArn `
         CodeS3Bucket=$Bucket `
         CodeS3Key=$Key `
         BedrockModelId=$BedrockModelId

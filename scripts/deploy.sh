@@ -4,13 +4,15 @@
 # CloudFormation needs the code already sitting in S3 before deploy).
 #
 # Usage:
-#   ./scripts/deploy.sh my-deploy-bucket you@example.com
+#   ./scripts/deploy.sh my-deploy-bucket arn:aws:sns:ap-southeast-1:123456789012:my-topic
 #
 # Requires: AWS CLI configured with deploy permissions, zip.
+# NOTE: The SNS topic must already exist (and have any subscriptions you
+# want, e.g. email) - this stack publishes to it but does not create it.
 set -euo pipefail
 
-BUCKET="${1:?Usage: deploy.sh <s3-bucket> <notification-email> [stack-name] [s3-key] [bedrock-model-id]}"
-EMAIL="${2:?Usage: deploy.sh <s3-bucket> <notification-email> [stack-name] [s3-key] [bedrock-model-id]}"
+BUCKET="${1:?Usage: deploy.sh <s3-bucket> <notification-topic-arn> [stack-name] [s3-key] [bedrock-model-id]}"
+NOTIFICATION_TOPIC_ARN="${2:?Usage: deploy.sh <s3-bucket> <notification-topic-arn> [stack-name] [s3-key] [bedrock-model-id]}"
 STACK_NAME="${3:-idle-resource-agent}"
 KEY="${4:-idle-resource-agent/tools_handler.zip}"
 BEDROCK_MODEL_ID="${5:-anthropic.claude-3-5-sonnet-20240620-v1:0}"
@@ -32,7 +34,7 @@ aws cloudformation deploy \
     --stack-name "$STACK_NAME" \
     --capabilities CAPABILITY_IAM \
     --parameter-overrides \
-        NotificationEmail="$EMAIL" \
+        NotificationTopicArn="$NOTIFICATION_TOPIC_ARN" \
         CodeS3Bucket="$BUCKET" \
         CodeS3Key="$KEY" \
         BedrockModelId="$BEDROCK_MODEL_ID"

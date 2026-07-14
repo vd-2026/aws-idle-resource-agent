@@ -1,10 +1,10 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "AWS Idle Resource Agent - Bedrock Agent + read-only Lambda tools that identify unused AWS resources (last 30 days) using Cost Explorer as a starting signal, and email a report via SNS. Plain CloudFormation, no SAM transform - the Lambda deployment package must be uploaded to S3 first (see scripts/deploy.ps1 / deploy.sh).",
+  "Description": "AWS Idle Resource Agent - Bedrock Agent + read-only Lambda tools that identify unused AWS resources (last 30 days) using Cost Explorer as a starting signal, and publish a report to an existing SNS topic. Plain CloudFormation, no SAM transform - the Lambda deployment package must be uploaded to S3 first (see scripts/deploy.ps1 / deploy.sh).",
   "Parameters": {
-    "NotificationEmail": {
+    "NotificationTopicArn": {
       "Type": "String",
-      "Description": "Email address to receive the idle-resource report"
+      "Description": "ARN of an existing SNS topic to publish the idle-resource report to (create/subscribe to this topic yourself beforehand)."
     },
     "BedrockModelId": {
       "Type": "String",
@@ -22,20 +22,6 @@
     }
   },
   "Resources": {
-    "ReportTopic": {
-      "Type": "AWS::SNS::Topic",
-      "Properties": {
-        "TopicName": "idle-resource-agent-reports",
-        "Subscription": [
-          {
-            "Protocol": "email",
-            "Endpoint": {
-              "Ref": "NotificationEmail"
-            }
-          }
-        ]
-      }
-    },
     "ToolsFunctionRole": {
       "Type": "AWS::IAM::Role",
       "Properties": {
@@ -99,7 +85,7 @@
                     "sns:Publish"
                   ],
                   "Resource": {
-                    "Ref": "ReportTopic"
+                    "Ref": "NotificationTopicArn"
                   }
                 }
               ]
@@ -133,7 +119,7 @@
         "Environment": {
           "Variables": {
             "REPORT_TOPIC_ARN": {
-              "Ref": "ReportTopic"
+              "Ref": "NotificationTopicArn"
             }
           }
         }
@@ -184,7 +170,8 @@
                     {
                       "Fn::Sub": "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*"
                     },
-                    "arn:aws:bedrock:*::foundation-model/*"
+                    "arn:aws:bedrock:*::foundation-model/*",
+                    "arn:aws:bedrock:ap-southeast-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
                   ]
                 },
                 {
@@ -196,6 +183,15 @@
                       "Arn"
                     ]
                   }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "aws-marketplace:ViewSubscriptions",
+                    "aws-marketplace:Subscribe",
+                    "aws-marketplace:Unsubscribe"
+                  ],
+                  "Resource": "*"
                 }
               ]
             }
@@ -216,8 +212,8 @@
         "FoundationModel": {
           "Ref": "BedrockModelId"
         },
-        "Instruction": "You are a FinOps analyst assistant. Your job is to find AWS resources that are likely unused or idle over the last 30 days and report estimated wasted spend. Steps:\n1. Always call getCostByService first to see which services are actually incurring cost in the last 30 days.\n2. Only call the specific idle-resource-check operations (EC2, EBS, EIP, RDS, ELB, Lambda, snapshots) for services that show non-trivial spend in step 1. Skip checks for services with near-zero cost.\n3. Cross-reference each finding with the cost data to estimate a monthly savings figure per resource where possible.\n4. Classify every finding as one of: \"Likely idle - review\", \"Needs verification\", or \"Low confidence\".\n5. This tool is READ-ONLY. Never suggest deleting, stopping, or modifying resources on your own. Only report and recommend manual review.\n6. When you are done analyzing, call sendReport with a well-formatted subject and a Markdown-style message body summarizing the findings (cost breakdown, list of idle candidates, estimated savings) so it can be emailed to the FinOps team. 7. If getCostByService shows non-trivial spend in a service that has no dedicated idle-check tool (e.g. S3, DynamoDB, SageMaker, Redshift, OpenSearch, NAT Gateways), call genericDescribe with an appropriate whitelisted read-only operation to investigate it instead of ignoring that spend. If genericDescribe returns a whitelist error, list that service under an \"Uncovered services - recommend manual review\" section in the report rather than omitting it.",
-        "Description": "Finds idle/unused AWS resources using Cost Explorer + read-only checks and emails a report.",
+        "Instruction": "You are a FinOps analyst assistant. Your job is to find AWS resources that are likely unused or idle over the last 30 days and report estimated wasted spend. Steps:\n1. Always call getCostByService first to see which services are actually incurring cost in the last 30 days.\n2. Only call the specific idle-resource-check operations (EC2, EBS, EIP, RDS, ELB, Lambda, snapshots) for services that show non-trivial spend in step 1. Skip checks for services with near-zero cost.\n3. Cross-reference each finding with the cost data to estimate a monthly savings figure per resource where possible.\n4. Classify every finding as one of: \"Likely idle - review\", \"Needs verification\", or \"Low confidence\".\n5. This tool is READ-ONLY. Never suggest deleting, stopping, or modifying resources on your own. Only report and recommend manual review.\n6. When you are done analyzing, call sendReport with a well-formatted subject and a Markdown-style message body summarizing the findings (cost breakdown, list of idle candidates, estimated savings) so it can be published to the FinOps team's SNS topic. 7. If getCostByService shows non-trivial spend in a service that has no dedicated idle-check tool (e.g. S3, DynamoDB, SageMaker, Redshift, OpenSearch, NAT Gateways), call genericDescribe with an appropriate whitelisted read-only operation to investigate it instead of ignoring that spend. If genericDescribe returns a whitelist error, list that service under an \"Uncovered services - recommend manual review\" section in the report rather than omitting it.",
+        "Description": "Finds idle/unused AWS resources using Cost Explorer + read-only checks and publishes a report to an SNS topic.",
         "IdleSessionTTLInSeconds": 900,
         "AutoPrepare": true,
         "ActionGroups": [
@@ -233,7 +229,7 @@
               }
             },
             "ApiSchema": {
-              "Payload": "{\"openapi\": \"3.0.0\", \"info\": {\"title\": \"Idle Resource Tools\", \"version\": \"1.0.0\", \"description\": \"Read-only AWS inspection tools for the idle-resource agent\"}, \"paths\": {\"/cost-by-service\": {\"get\": {\"operationId\": \"getCostByService\", \"description\": \"Get AWS cost grouped by service for the last 30 days from Cost Explorer\", \"responses\": {\"200\": {\"description\": \"Cost breakdown by service\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/ec2-low-utilization\": {\"get\": {\"operationId\": \"getEc2LowUtilization\", \"description\": \"List stopped EC2 instances or running instances with average CPU below 5% over 30 days\", \"responses\": {\"200\": {\"description\": \"List of low-utilization EC2 instances\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/unattached-ebs-volumes\": {\"get\": {\"operationId\": \"getUnattachedEbsVolumes\", \"description\": \"List EBS volumes in 'available' (unattached) state\", \"responses\": {\"200\": {\"description\": \"List of unattached EBS volumes\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/unassociated-eips\": {\"get\": {\"operationId\": \"getUnassociatedEips\", \"description\": \"List Elastic IPs not associated with any instance or network interface\", \"responses\": {\"200\": {\"description\": \"List of unassociated Elastic IPs\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/idle-rds\": {\"get\": {\"operationId\": \"getIdleRds\", \"description\": \"List RDS instances with near-zero database connections over the last 30 days\", \"responses\": {\"200\": {\"description\": \"List of idle RDS instances\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/idle-load-balancers\": {\"get\": {\"operationId\": \"getIdleLoadBalancers\", \"description\": \"List load balancers with no registered or no healthy targets\", \"responses\": {\"200\": {\"description\": \"List of idle load balancers\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/stale-lambdas\": {\"get\": {\"operationId\": \"getStaleLambdas\", \"description\": \"List Lambda functions with zero invocations over the last 30 days\", \"responses\": {\"200\": {\"description\": \"List of stale Lambda functions\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/old-snapshots\": {\"get\": {\"operationId\": \"getOldSnapshots\", \"description\": \"List EBS snapshots older than 90 days that are not referenced by any AMI\", \"responses\": {\"200\": {\"description\": \"List of old, likely-orphaned snapshots\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/send-report\": {\"post\": {\"operationId\": \"sendReport\", \"description\": \"Publish the final idle-resource report to the SNS email topic\", \"requestBody\": {\"required\": true, \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\", \"required\": [\"subject\", \"message\"], \"properties\": {\"subject\": {\"type\": \"string\", \"description\": \"Email subject line\"}, \"message\": {\"type\": \"string\", \"description\": \"Full report body (Markdown-style text is fine)\"}}}}}}, \"responses\": {\"200\": {\"description\": \"Confirmation that the report was published\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/generic-describe\": {\"post\": {\"operationId\": \"genericDescribe\", \"description\": \"Call a whitelisted read-only AWS API operation for a service that does not have a dedicated idle-check tool (e.g. S3, DynamoDB, SageMaker, Redshift, OpenSearch, NAT Gateways). Use this when getCostByService shows meaningful spend in a service not covered by the other tools. Only pre-approved read-only (Describe/List/Get) operations are permitted; anything else is rejected.\", \"requestBody\": {\"required\": true, \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\", \"required\": [\"service\", \"operation\"], \"properties\": {\"service\": {\"type\": \"string\", \"description\": \"boto3 service name, e.g. s3, dynamodb, sagemaker, redshift, es, opensearch, ec2, cloudwatch\"}, \"operation\": {\"type\": \"string\", \"description\": \"boto3 method name to call, e.g. list_buckets, describe_table, list_endpoints, describe_clusters\"}, \"params\": {\"type\": \"string\", \"description\": \"Optional JSON-encoded object of keyword arguments to pass to the boto3 method, e.g. {\\\"TableName\\\": \\\"my-table\\\"}\"}}}}}}, \"responses\": {\"200\": {\"description\": \"Result of the whitelisted read-only API call, or an error if not whitelisted\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}}}"
+              "Payload": "{\"openapi\": \"3.0.0\", \"info\": {\"title\": \"Idle Resource Tools\", \"version\": \"1.0.0\", \"description\": \"Read-only AWS inspection tools for the idle-resource agent\"}, \"paths\": {\"/cost-by-service\": {\"get\": {\"operationId\": \"getCostByService\", \"description\": \"Get AWS cost grouped by service for the last 30 days from Cost Explorer\", \"responses\": {\"200\": {\"description\": \"Cost breakdown by service\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/ec2-low-utilization\": {\"get\": {\"operationId\": \"getEc2LowUtilization\", \"description\": \"List stopped EC2 instances or running instances with average CPU below 5% over 30 days\", \"responses\": {\"200\": {\"description\": \"List of low-utilization EC2 instances\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/unattached-ebs-volumes\": {\"get\": {\"operationId\": \"getUnattachedEbsVolumes\", \"description\": \"List EBS volumes in 'available' (unattached) state\", \"responses\": {\"200\": {\"description\": \"List of unattached EBS volumes\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/unassociated-eips\": {\"get\": {\"operationId\": \"getUnassociatedEips\", \"description\": \"List Elastic IPs not associated with any instance or network interface\", \"responses\": {\"200\": {\"description\": \"List of unassociated Elastic IPs\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/idle-rds\": {\"get\": {\"operationId\": \"getIdleRds\", \"description\": \"List RDS instances with near-zero database connections over the last 30 days\", \"responses\": {\"200\": {\"description\": \"List of idle RDS instances\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/idle-load-balancers\": {\"get\": {\"operationId\": \"getIdleLoadBalancers\", \"description\": \"List load balancers with no registered or no healthy targets\", \"responses\": {\"200\": {\"description\": \"List of idle load balancers\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/stale-lambdas\": {\"get\": {\"operationId\": \"getStaleLambdas\", \"description\": \"List Lambda functions with zero invocations over the last 30 days\", \"responses\": {\"200\": {\"description\": \"List of stale Lambda functions\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/old-snapshots\": {\"get\": {\"operationId\": \"getOldSnapshots\", \"description\": \"List EBS snapshots older than 90 days that are not referenced by any AMI\", \"responses\": {\"200\": {\"description\": \"List of old, likely-orphaned snapshots\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/send-report\": {\"post\": {\"operationId\": \"sendReport\", \"description\": \"Publish the final idle-resource report to the configured SNS topic\", \"requestBody\": {\"required\": true, \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\", \"required\": [\"subject\", \"message\"], \"properties\": {\"subject\": {\"type\": \"string\", \"description\": \"Report subject/title\"}, \"message\": {\"type\": \"string\", \"description\": \"Full report body (Markdown-style text is fine)\"}}}}}}, \"responses\": {\"200\": {\"description\": \"Confirmation that the report was published\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}, \"/generic-describe\": {\"post\": {\"operationId\": \"genericDescribe\", \"description\": \"Call a whitelisted read-only AWS API operation for a service that does not have a dedicated idle-check tool (e.g. S3, DynamoDB, SageMaker, Redshift, OpenSearch, NAT Gateways). Use this when getCostByService shows meaningful spend in a service not covered by the other tools. Only pre-approved read-only (Describe/List/Get) operations are permitted; anything else is rejected.\", \"requestBody\": {\"required\": true, \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\", \"required\": [\"service\", \"operation\"], \"properties\": {\"service\": {\"type\": \"string\", \"description\": \"boto3 service name, e.g. s3, dynamodb, sagemaker, redshift, es, opensearch, ec2, cloudwatch\"}, \"operation\": {\"type\": \"string\", \"description\": \"boto3 method name to call, e.g. list_buckets, describe_table, list_endpoints, describe_clusters\"}, \"params\": {\"type\": \"string\", \"description\": \"Optional JSON-encoded object of keyword arguments to pass to the boto3 method, e.g. {\\\"TableName\\\": \\\"my-table\\\"}\"}}}}}}, \"responses\": {\"200\": {\"description\": \"Result of the whitelisted read-only API call, or an error if not whitelisted\", \"content\": {\"application/json\": {\"schema\": {\"type\": \"object\"}}}}}}}}}"
             }
           }
         ]
@@ -241,9 +237,9 @@
     }
   },
   "Outputs": {
-    "ReportTopicArn": {
+    "NotificationTopicArn": {
       "Value": {
-        "Ref": "ReportTopic"
+        "Ref": "NotificationTopicArn"
       }
     },
     "ToolsFunctionArn": {
