@@ -1,0 +1,200 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "AWS Idle Resource Agent - Bedrock Agent + read-only Lambda tools that identify unused AWS resources (last 30 days) using Cost Explorer as a starting signal, and email a report via SNS. Plain CloudFormation, no SAM transform - the Lambda deployment package must be uploaded to S3 first (see scripts/deploy.ps1 / deploy.sh).",
+  "Parameters": {
+    "NotificationEmail": {
+      "Type": "String",
+      "Description": "Email address to receive the idle-resource report"
+    },
+    "BedrockModelId": {
+      "Type": "String",
+      "Default": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+      "Description": "Bedrock foundation model ID OR inference profile ID/ARN used by the agent. Newer models (e.g. Claude Sonnet 4.5) require an inference profile - pass its ID (e.g. us.anthropic.claude-sonnet-4-5-20250929-v1:0) or full ARN here instead of the raw model ID. Must be enabled in Bedrock Model access."
+    },
+    "CodeS3Bucket": {
+      "Type": "String",
+      "Description": "S3 bucket containing the Lambda deployment package (see scripts/deploy)"
+    },
+    "CodeS3Key": {
+      "Type": "String",
+      "Default": "idle-resource-agent/tools_handler.zip",
+      "Description": "S3 key of the Lambda deployment package zip"
+    }
+  },
+  "Resources": {
+    "ReportTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "TopicName": "idle-resource-agent-reports",
+        "Subscription": [
+          {
+            "Protocol": "email",
+            "Endpoint": { "Ref": "NotificationEmail" }
+          }
+        ]
+      }
+    },
+    "ToolsFunctionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": "lambda.amazonaws.com" },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "IdleResourceReadOnlyChecks",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ce:GetCostAndUsage",
+                    "ec2:DescribeInstances",
+                    "ec2:DescribeVolumes",
+                    "ec2:DescribeAddresses",
+                    "ec2:DescribeSnapshots",
+                    "ec2:DescribeImages",
+                    "rds:DescribeDBInstances",
+                    "elasticloadbalancing:DescribeLoadBalancers",
+                    "elasticloadbalancing:DescribeTargetGroups",
+                    "elasticloadbalancing:DescribeTargetHealth",
+                    "lambda:ListFunctions",
+                    "cloudwatch:GetMetricStatistics",
+                    "cloudwatch:GetMetricData"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": ["sns:Publish"],
+                  "Resource": { "Ref": "ReportTopic" }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ToolsFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": "idle-resource-agent-tools",
+        "Runtime": "python3.12",
+        "Handler": "app.lambda_handler",
+        "Role": { "Fn::GetAtt": ["ToolsFunctionRole", "Arn"] },
+        "Timeout": 60,
+        "MemorySize": 256,
+        "Code": {
+          "S3Bucket": { "Ref": "CodeS3Bucket" },
+          "S3Key": { "Ref": "CodeS3Key" }
+        },
+        "Environment": {
+          "Variables": {
+            "REPORT_TOPIC_ARN": { "Ref": "ReportTopic" }
+          }
+        }
+      }
+    },
+    "ToolsFunctionResourcePolicy": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": { "Ref": "ToolsFunction" },
+        "Principal": "bedrock.amazonaws.com",
+        "SourceArn": {
+          "Fn::Sub": "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent/*"
+        }
+      }
+    },
+    "BedrockAgentRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": "bedrock.amazonaws.com" },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "InvokeModelAndLambda",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeModelWithResponseStream",
+                    "bedrock:GetInferenceProfile"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*"
+                    },
+                    "arn:aws:bedrock:*::foundation-model/*"
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "lambda:InvokeFunction",
+                  "Resource": { "Fn::GetAtt": ["ToolsFunction", "Arn"] }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "IdleResourceAgent": {
+      "Type": "AWS::Bedrock::Agent",
+      "Properties": {
+        "AgentName": "idle-resource-agent",
+        "AgentResourceRoleArn": { "Fn::GetAtt": ["BedrockAgentRole", "Arn"] },
+        "FoundationModel": { "Ref": "BedrockModelId" },
+        "Instruction": "You are a FinOps analyst assistant. Your job is to find AWS resources that are likely unused or idle over the last 30 days and report estimated wasted spend. Steps:\n1. Always call getCostByService first to see which services are actually incurring cost in the last 30 days.\n2. Only call the specific idle-resource-check operations (EC2, EBS, EIP, RDS, ELB, Lambda, snapshots) for services that show non-trivial spend in step 1. Skip checks for services with near-zero cost.\n3. Cross-reference each finding with the cost data to estimate a monthly savings figure per resource where possible.\n4. Classify every finding as one of: \"Likely idle - review\", \"Needs verification\", or \"Low confidence\".\n5. This tool is READ-ONLY. Never suggest deleting, stopping, or modifying resources on your own. Only report and recommend manual review.\n6. When you are done analyzing, call sendReport with a well-formatted subject and a Markdown-style message body summarizing the findings (cost breakdown, list of idle candidates, estimated savings) so it can be emailed to the FinOps team.",
+        "Description": "Finds idle/unused AWS resources using Cost Explorer + read-only checks and emails a report.",
+        "IdleSessionTTLInSeconds": 900,
+        "AutoPrepare": true,
+        "ActionGroups": [
+          {
+            "ActionGroupName": "idle-resource-tools",
+            "Description": "Read-only tools to inspect cost and resource utilization",
+            "ActionGroupExecutor": {
+              "Lambda": { "Fn::GetAtt": ["ToolsFunction", "Arn"] }
+            },
+            "ApiSchema": {
+              "Payload": "{\"openapi\":\"3.0.0\",\"info\":{\"title\":\"Idle Resource Tools\",\"version\":\"1.0.0\",\"description\":\"Read-only AWS inspection tools for the idle-resource agent\"},\"paths\":{\"/cost-by-service\":{\"get\":{\"operationId\":\"getCostByService\",\"description\":\"Get AWS cost grouped by service for the last 30 days from Cost Explorer\",\"responses\":{\"200\":{\"description\":\"Cost breakdown by service\",\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\"}}}}}}},\"/ec2-low-utilization\":{\"get\":{\"operationId\":\"getEc2LowUtilization\",\"description\":\"List stopped EC2 instances or running instances with average CPU below 5% over 30 days\",\"responses\":{\"200\":{\"description\":\"List of low-utilization EC2 instances\",\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\"}}}}}}},\"/unattached-ebs-volumes\":{\"get\":{\"operationId\":\"getUnattachedEbsVolumes\",\"description\":\"List EBS volumes in 'available' (unattached) state\",\"responses\":{\"200\":{\"description\":\"List of unattached EBS volumes\",\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\"}}}}}}},\"/unassociated-eips\":{\"get\":{\"operationId\":\"getUnassociatedEips\",\"description\":\"List Elastic IPs not associated with any instance or network interface\",\"responses\":{\"200\":{\"description\":\"List of unassociated Elastic IPs\",\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\"}}}}}}},\"/idle-rds\":{\"get\":{\"operationId\":\"getIdleRds\",\"description\":\"List RDS instances with near-zero database connections over the last 30 days\",\"responses\":{\"200\":{\"description\":\"List of idle RDS instances\",\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\"}}}}}}},\"/idle-load-balancers\":{\"get\":{\"operationId\":\"getIdleLoadBalancers\",\"description\":\"List load balancers with no registered or no healthy targets\",\"responses\":{\"200\":{\"description\":\"List of idle load balancers\",\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\"}}}}}}},\"/stale-lambdas\":{\"get\":{\"operationId\":\"getStaleLambdas\",\"description\":\"List Lambda functions with zero invocations over the last 30 days\",\"responses\":{\"200\":{\"description\":\"List of stale Lambda functions\",\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\"}}}}}}},\"/old-snapshots\":{\"get\":{\"operationId\":\"getOldSnapshots\",\"description\":\"List EBS snapshots older than 90 days that are not referenced by any AMI\",\"responses\":{\"200\":{\"description\":\"List of old, likely-orphaned snapshots\",\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\"}}}}}}},\"/send-report\":{\"post\":{\"operationId\":\"sendReport\",\"description\":\"Publish the final idle-resource report to the SNS email topic\",\"requestBody\":{\"required\":true,\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\",\"required\":[\"subject\",\"message\"],\"properties\":{\"subject\":{\"type\":\"string\",\"description\":\"Email subject line\"},\"message\":{\"type\":\"string\",\"description\":\"Full report body (Markdown-style text is fine)\"}}}}}},\"responses\":{\"200\":{\"description\":\"Confirmation that the report was published\",\"content\":{\"application/json\":{\"schema\":{\"type\":\"object\"}}}}}}}}}"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "ReportTopicArn": {
+      "Value": { "Ref": "ReportTopic" }
+    },
+    "ToolsFunctionArn": {
+      "Value": { "Fn::GetAtt": ["ToolsFunction", "Arn"] }
+    },
+    "AgentId": {
+      "Value": { "Ref": "IdleResourceAgent" }
+    }
+  }
+}

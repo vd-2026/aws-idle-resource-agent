@@ -1,5 +1,5 @@
 # Zips the Lambda source, uploads it to S3, and deploys the plain
-# CloudFormation stack (no SAM transform is used in template.yaml, so
+# CloudFormation stack (no SAM transform is used in template.json, so
 # CloudFormation needs the code already sitting in S3 before deploy).
 #
 # Usage:
@@ -31,7 +31,7 @@ if ($LASTEXITCODE -ne 0) { throw "s3 upload failed" }
 
 Write-Host "Deploying CloudFormation stack '$StackName'"
 aws cloudformation deploy `
-    --template-file (Join-Path $root "template.yaml") `
+    --template-file (Join-Path $root "template.json") `
     --stack-name $StackName `
     --capabilities CAPABILITY_IAM `
     --parameter-overrides `

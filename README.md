@@ -95,7 +95,7 @@ simple to deploy while still exposing a rich toolset to the agent.
 ## Repo layout
 
 ```
-template.yaml               Plain CloudFormation: Lambda, IAM, SNS topic, Bedrock Agent + Action Group
+template.json                Plain CloudFormation (JSON): Lambda, IAM, SNS topic, Bedrock Agent + Action Group
 src/tools_handler/app.py    All read-only checks + SNS report publisher
 src/tools_handler/requirements.txt
 scripts/deploy.ps1          Zip, upload to S3, and deploy (PowerShell)
@@ -112,7 +112,7 @@ scripts/deploy.sh           Zip, upload to S3, and deploy (bash)
   in the same region works).
 - Python 3.12.
 
-This project uses **plain CloudFormation** (`template.yaml`, no
+This project uses **plain CloudFormation** (`template.json`, no
 `Transform: AWS::Serverless-2016-10-31`, no SAM CLI required). Because
 there's no SAM packaging step, the Lambda code must be zipped and uploaded
 to S3 before `aws cloudformation deploy` runs — the provided scripts do
@@ -176,7 +176,7 @@ python app.py snapshots   # old orphaned snapshots
 
 Every IAM permission granted to the Lambda is `Describe*` / `List*` / `Get*`
 plus `sns:Publish` to the report topic only. There is no `Stop*`,
-`Terminate*`, or `Delete*` permission anywhere in `template.yaml` — the
+`Terminate*`, or `Delete*` permission anywhere in `template.json` — the
 agent's instructions also explicitly forbid recommending automated remediation.
 
 ## Possible extensions

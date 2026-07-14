@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Zips the Lambda source, uploads it to S3, and deploys the plain
-# CloudFormation stack (no SAM transform is used in template.yaml, so
+# CloudFormation stack (no SAM transform is used in template.json, so
 # CloudFormation needs the code already sitting in S3 before deploy).
 #
 # Usage:
@@ -28,7 +28,7 @@ aws s3 cp "$ZIP_PATH" "s3://$BUCKET/$KEY"
 
 echo "Deploying CloudFormation stack '$STACK_NAME'"
 aws cloudformation deploy \
-    --template-file "$ROOT_DIR/template.yaml" \
+    --template-file "$ROOT_DIR/template.json" \
     --stack-name "$STACK_NAME" \
     --capabilities CAPABILITY_IAM \
     --parameter-overrides \
