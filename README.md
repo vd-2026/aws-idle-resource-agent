@@ -10,17 +10,41 @@ emailed via **SNS**.
 ## Why this is "agentic" (not just a script)
 
 A traditional script would run all checks every time. This project gives the
-Bedrock Agent (Claude) a single Python Lambda exposing 9 read-only "tools"
+Bedrock Agent (Claude) a single Python Lambda exposing 10 read-only "tools"
 (via a Bedrock Agent Action Group) and lets the model reason about which
 tools to call and in what order:
 
 1. Always calls `getCostByService` first (Cost Explorer, last 30 days).
 2. Based on which services show real spend, it **chooses** which of the
-   remaining 7 checks are worth running (e.g. skips RDS checks entirely if
+   remaining 8 checks are worth running (e.g. skips RDS checks entirely if
    RDS costs are ~$0).
-3. Cross-references findings against the cost data to estimate savings.
-4. Classifies each finding's confidence.
-5. Calls `sendReport` with a written summary, which publishes to SNS (email).
+3. For high-cost services with no dedicated check (S3, DynamoDB, SageMaker,
+   Redshift, OpenSearch, NAT Gateways), it can call `genericDescribe` - a
+   whitelisted, read-only "escape hatch" tool (see below) - instead of
+   silently ignoring that spend.
+4. Cross-references findings against the cost data to estimate savings.
+5. Classifies each finding's confidence.
+6. Calls `sendReport` with a written summary, which publishes to SNS (email).
+
+## Handling costly services with no dedicated tool
+
+Bedrock Agents can only invoke tools you've explicitly defined - they can't
+invent a new AWS API call on the fly. To avoid silently missing high-cost
+services outside the 8 hardcoded checks (EC2, EBS, EIP, RDS, ELB, Lambda,
+snapshots), there's a 9th check-style tool: **`genericDescribe`**.
+
+- The agent passes a `service`, `operation`, and optional JSON-encoded
+  `params` (e.g. `service: dynamodb, operation: describe_table`).
+- The Lambda only executes the call if `(service, operation)` is in a
+  hardcoded whitelist (`GENERIC_ALLOWED_OPERATIONS` in `app.py`) covering
+  read-only `Describe*/List*/Get*` operations for S3, DynamoDB, SageMaker,
+  Redshift, OpenSearch, NAT Gateways, and CloudWatch metrics. Anything not
+  whitelisted is rejected before any AWS API call is made - the model
+  cannot use this to call arbitrary or destructive APIs.
+- The agent's instruction tells it to try `genericDescribe` for costly,
+  uncovered services, and to explicitly list any still-uncovered service
+  under an "Uncovered services - recommend manual review" section rather
+  than omitting it from the report.
 
 ## Architecture
 
@@ -33,7 +57,7 @@ flowchart LR
 
     Agent[Bedrock Agent<br/>Claude foundation model]
 
-    subgraph "Action Group: idle-resource-tools (1 Lambda, 9 operations)"
+    subgraph "Action Group: idle-resource-tools (1 Lambda, 10 operations)"
         L[Tools Lambda<br/>src/tools_handler/app.py]
     end
 
@@ -43,6 +67,7 @@ flowchart LR
     RDSAPI[(RDS API +<br/>CloudWatch)]
     ELBAPI[(ELBv2 API)]
     LambdaAPI[(Lambda API +<br/>CloudWatch)]
+    GenericAPI[(S3, DynamoDB, SageMaker,<br/>Redshift, OpenSearch, NAT GW<br/>- whitelisted only)]
 
     SNS[/SNS Topic/]
     Email([Email inbox])
@@ -51,7 +76,8 @@ flowchart LR
     User --> Agent
     Agent -->|1: getCostByService| L
     Agent -->|2-8: idle checks,<br/>chosen dynamically| L
-    Agent -->|9: sendReport| L
+    Agent -->|9: genericDescribe<br/>for uncovered services| L
+    Agent -->|10: sendReport| L
 
     L --> CE
     L --> EC2
@@ -59,6 +85,7 @@ flowchart LR
     L --> RDSAPI
     L --> ELBAPI
     L --> LambdaAPI
+    L --> GenericAPI
     L -->|publish report| SNS
     SNS --> Email
 ```
@@ -88,7 +115,7 @@ sequenceDiagram
     S-->>U: Email with report
 ```
 
-All 9 "tools" are operations on **one** Lambda function
+All 10 "tools" are operations on **one** Lambda function
 (`src/tools_handler/app.py`), routed by `apiPath`. This keeps the project
 simple to deploy while still exposing a rich toolset to the agent.
 
@@ -178,6 +205,13 @@ Every IAM permission granted to the Lambda is `Describe*` / `List*` / `Get*`
 plus `sns:Publish` to the report topic only. There is no `Stop*`,
 `Terminate*`, or `Delete*` permission anywhere in `template.json` — the
 agent's instructions also explicitly forbid recommending automated remediation.
+
+The `genericDescribe` tool adds a second layer of defense-in-depth: even
+though its IAM permissions are also read-only, the Lambda additionally
+enforces a hardcoded `(service, operation)` whitelist in code
+(`GENERIC_ALLOWED_OPERATIONS`) before making any AWS API call, so the model
+can't call an unexpected boto3 method even if the IAM policy happened to
+allow it.
 
 ## Possible extensions
 

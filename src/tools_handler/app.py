@@ -255,6 +255,78 @@ def send_report(subject, message):
     return {"status": "sent", "topic_arn": REPORT_TOPIC_ARN}
 
 
+# Whitelist of read-only boto3 (service, operation) pairs the agent may call
+# through genericDescribe. This exists to extend coverage to services that
+# don't have a dedicated tool above (e.g. S3, DynamoDB, SageMaker, Redshift,
+# OpenSearch, NAT Gateways) without giving the model free rein to invoke any
+# AWS API. Only Describe*/List*/Get* style read operations are included -
+# nothing that creates, modifies, or deletes a resource.
+GENERIC_ALLOWED_OPERATIONS = {
+    "s3": {
+        "list_buckets",
+        "get_bucket_location",
+        "get_bucket_lifecycle_configuration",
+        "get_bucket_metrics_configuration",
+    },
+    "dynamodb": {
+        "list_tables",
+        "describe_table",
+        "describe_time_to_live",
+        "describe_continuous_backups",
+    },
+    "sagemaker": {
+        "list_endpoints",
+        "describe_endpoint",
+    },
+    "redshift": {
+        "describe_clusters",
+    },
+    "es": {
+        "list_domain_names",
+        "describe_domain_config",
+    },
+    "opensearch": {
+        "list_domain_names",
+        "describe_domain_config",
+    },
+    "ec2": {
+        "describe_nat_gateways",
+    },
+    "cloudwatch": {
+        "get_metric_statistics",
+        "get_metric_data",
+        "list_metrics",
+    },
+}
+
+
+def generic_describe(service, operation, params):
+    """Dynamically call a whitelisted read-only boto3 operation.
+
+    Lets the agent investigate services/costs that don't have a dedicated
+    idle-check tool (e.g. S3, DynamoDB, SageMaker) instead of silently
+    ignoring high-cost services outside the 8 hardcoded checks. Only
+    (service, operation) pairs present in GENERIC_ALLOWED_OPERATIONS can be
+    invoked - anything else is rejected before any AWS API call is made.
+    """
+    allowed_ops = GENERIC_ALLOWED_OPERATIONS.get(service)
+    if allowed_ops is None or operation not in allowed_ops:
+        return {
+            "error": (
+                f"Operation '{service}:{operation}' is not in the read-only "
+                "whitelist for genericDescribe. Allowed services/operations: "
+                f"{ {s: sorted(ops) for s, ops in GENERIC_ALLOWED_OPERATIONS.items()} }"
+            )
+        }
+    client = boto3.client(service)
+    method = getattr(client, operation, None)
+    if method is None:
+        return {"error": f"boto3 client for '{service}' has no operation '{operation}'"}
+    result = method(**(params or {}))
+    result.pop("ResponseMetadata", None)
+    return result
+
+
 DISPATCH = {
     "/cost-by-service": lambda params, body: get_cost_by_service(),
     "/ec2-low-utilization": lambda params, body: get_ec2_low_utilization(),
@@ -267,7 +339,29 @@ DISPATCH = {
     "/send-report": lambda params, body: send_report(
         body.get("subject", "Idle Resource Report"), body.get("message", "")
     ),
+    "/generic-describe": lambda params, body: generic_describe(
+        body.get("service", ""), body.get("operation", ""), _coerce_params(body.get("params"))
+    ),
 }
+
+
+def _coerce_params(raw_params):
+    """Bedrock sends requestBody properties as strings, so an object-typed
+    'params' field typically arrives as a JSON-encoded string rather than a
+    native dict. Accept either form."""
+    if raw_params is None:
+        return {}
+    if isinstance(raw_params, dict):
+        return raw_params
+    if isinstance(raw_params, str):
+        raw_params = raw_params.strip()
+        if not raw_params:
+            return {}
+        try:
+            return json.loads(raw_params)
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 def _extract_body(event):
