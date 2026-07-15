@@ -171,7 +171,9 @@
                       "Fn::Sub": "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/*"
                     },
                     "arn:aws:bedrock:*::foundation-model/*",
-                    "arn:aws:bedrock:ap-southeast-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+                    {
+                      "Fn::Sub": "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+                    }
                   ]
                 },
                 {
